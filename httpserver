@@ -1,0 +1,157 @@
+#!/usr/lib/memmanaged/python3
+import http.server
+import sys
+import urllib.error
+import urllib.request
+import collections
+import os
+from os.path import getsize
+
+SERVER_PORT = 8080
+ORIGIN_SERVER = sys.argv[4]
+PORT = int(sys.argv[2])
+MAX_STORAGE = 10000000  # max 10MB disk space
+
+
+# Over write Ordered Dictionary a little bit. When get the key, will move it to the end means it is
+# the latest used one.
+class LRUCache(collections.OrderedDict):
+    def get(self, key):
+        if key not in self:
+            return
+        self.move_to_end(key)
+        return key
+
+
+# The class for cache. It uses file system and an ordered dictionary to keep track of data.
+class DiskCache:
+    def __init__(self, max_storage):
+        self.max_storage = max_storage
+        self.current_path = os.getcwd()
+        self.cache_path = f'{self.current_path}/cache'
+        self.create_cache_folder()
+        self.cache_dic = LRUCache()
+        # load file system cache into dic
+        self.load_cache_to_dic()
+        self.size = self.get_cache_size()
+
+    # check the exist cache in the file system and load them input cache dic
+    def load_cache_to_dic(self):
+        for file in os.listdir(self.cache_path):
+            file_path = f'{self.cache_path}/{file}'
+            if os.path.isfile(file_path):
+                self.cache_dic[file] = ''
+
+    # create a new folder 'cache' when there is no one.
+    def create_cache_folder(self):
+        if not os.path.exists(self.cache_path):
+            os.mkdir('cache')
+
+    # get the total storage of files store in cache
+    def get_cache_size(self):
+        total_size = 0
+        for file in os.listdir(self.cache_path):
+            file_path = f'{self.cache_path}/{file}'
+            if os.path.isfile(file_path):
+                total_size += getsize(file_path)
+        return total_size
+
+    # to valuate if the key is in cache dictionary
+    def is_in_cache(self, key):
+        return key in self.cache_dic
+
+    # if the key is in cache dictionary, get the data from file system.
+    def get(self, key):
+        key = str(key)
+        if key in self.cache_dic:
+            file = open(f'{self.cache_path}/{key}', 'rb')
+            data = file.read()
+            file.close()
+            return data
+        return
+
+    # put a new cache data in the cache. Will pop the least used cache when the storage is over the
+    # maximum.
+    def put(self, key, data):
+        key = str(key)
+        data_size = len(data)
+        # if the incoming data size is above the max storage just return
+        if data_size > self.max_storage:
+            return
+        # if the storage is full and the incoming data is less than the max storage
+        # we poop the least used cache until there is enough room for the new cache
+        while (self.size + data_size) > self.max_storage:
+            self.remove_earliest()
+        # put the file name into the cache dictionary
+        self.cache_dic[key] = ''
+        # write cache into file system
+        file = open(f'{self.cache_path}/{key}', 'wb')
+        file.write(data)
+        file.close()
+        self.size += data_size
+
+    # remove the least used cache in the dictionary and file system
+    def remove_earliest(self):
+        if len(self.cache_dic) == 0:
+            return
+        else:
+            try:
+                # pop the least used file which is the first one in the dictionary
+                popped_file_name = self.cache_dic.popitem(last=False)[0]
+                file_path = f'{self.cache_path}/{popped_file_name}'
+                self.size -= getsize(file_path)
+                os.remove(file_path)
+            except Exception as e:
+                sys.stdout.write(e.__str__())
+
+
+# initial disk cache as global variable
+CACHE = DiskCache(MAX_STORAGE)
+
+
+# implement a http request handler for the HTTP server
+class HandlerClass(http.server.BaseHTTPRequestHandler):
+    global CACHE
+
+    def do_response(self, code):
+        self.send_response(code)
+        self.send_header("Content-type", "text/html")
+        self.end_headers()
+
+    def do_GET(self):
+        # build a GET request url
+        request = f"http://{ORIGIN_SERVER}:{SERVER_PORT}{self.path}"
+
+        path = self.path.replace('/', '')
+        # if the request is not in the cache, then respond it and store it in the cache
+        if not CACHE.is_in_cache(path):
+            # respond 204 to this certain path according to post 119 on piazza
+            if self.path == "/grading/beacon":
+                self.do_response(204)
+                return
+            try:
+                # open the url and read the page to get the required data
+                data = urllib.request.urlopen(request).read()
+                self.do_response(200)  # respond 200 if data found
+                self.wfile.write(data)  # write the data into a file
+                CACHE.put(path, data)  # store the request into the cache
+            except Exception:
+                self.do_response(404)  # if page not found, respond with 404
+        else:
+            data = CACHE.get(path)  # if request is already in the cache, directly respond with 200
+            self.do_response(200)
+            self.wfile.write(data)
+
+
+def main():
+    server = http.server.HTTPServer(("", PORT), HandlerClass)
+
+    try:
+        server.serve_forever()
+    except (Exception, KeyboardInterrupt):
+        server.shutdown()
+        sys.exit()
+
+
+if __name__ == '__main__':
+    main()

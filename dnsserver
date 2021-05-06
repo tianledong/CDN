@@ -1,0 +1,116 @@
+#!/usr/bin/python3
+import json
+import socket
+import sys
+import urllib.request
+from math import radians, cos, sin, asin, sqrt, inf
+import dnslib
+
+PORT = int(sys.argv[2])
+SERVER_NAME = sys.argv[4]
+
+EC2_HOSTS_COORDINATES = {'54.159.99.25': [39.0438, -77.4874], '50.18.189.64': [37.3394, -121.895],
+                         '18.229.54.5': [-23.5505, -46.6333], '13.244.183.11': [-33.9258, 18.4259],
+                         '13.36.115.83': [48.8566, 2.35222], '13.51.89.160': [59.3293, 18.0686],
+                         '65.1.183.44': [19.076, 72.8777], '13.208.85.51': [34.6937, 135.502],
+                         '54.79.190.216': [-33.8591, 151.2002]}
+# Store known Ip. Ip is the key and best host is the value.
+USER_IP_CACHE = {}
+
+
+# find given ip location through ip api
+# return lat and lon as floats
+def find_ip_location(ip):
+    request = f'http://ipinfo.io/{ip}?token=5461746e936dd7'
+    data = urllib.request.urlopen(request)
+    data = json.load(data)['loc']
+    data = data.split(",")
+    lat = float(data[0])
+    lon = float(data[1])
+    return lat, lon
+
+
+# Cited from https://stackoverflow.com/questions/4913349
+def haversine(lon1, lat1, lon2, lat2):
+    """
+    Calculate the great circle distance between two points
+    on the earth (specified in decimal degrees)
+    """
+    # convert decimal degrees to radians
+    lon1, lat1, lon2, lat2 = map(radians, [lon1, lat1, lon2, lat2])
+
+    # haversine formula
+    dlon = lon2 - lon1
+    dlat = lat2 - lat1
+    a = sin(dlat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(dlon / 2) ** 2
+    c = 2 * asin(sqrt(a))
+    r = 6371  # Radius of earth in kilometers. Use 3956 for miles
+    return c * r
+
+
+# find the closest host
+def find_closest_host(lon, lat):
+    min_key = ''
+    min_distance = inf
+    # compare with each ec2 host, find the closest one
+    for key in EC2_HOSTS_COORDINATES.keys():
+        lat1 = EC2_HOSTS_COORDINATES[key][0]
+        lon1 = EC2_HOSTS_COORDINATES[key][1]
+        distance = haversine(lon, lat, lon1, lat1)
+        if distance < min_distance:
+            min_key = key
+            min_distance = distance
+    return min_key
+
+
+def main():
+    global USER_IP_CACHE
+    # create a UDP socket for sending DNS packets
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+    # create a temp socket to get local ip
+    tmp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        tmp_sock.connect(("8.8.8.8", PORT))
+        local_ip = tmp_sock.getsockname()[0]
+        tmp_sock.close()
+    except socket.error as err:
+        tmp_sock.close()
+        sys.exit(err)
+
+    # bind to the local ip and the given port
+    sock.bind((local_ip, PORT))
+
+    try:
+        # keep the server running forever until a keyboard interrupt signal is detected
+        while True:
+            # receive from the client and separate the data and the client address
+            data, addr = sock.recvfrom(512)
+            ip_addr = addr[0]
+
+            # if we already have the closest host in cache
+            # then return it directly
+            if ip_addr in USER_IP_CACHE:
+                best_host = USER_IP_CACHE[ip_addr]
+            else:
+                # get the location of client's ip address
+                lat, lon = find_ip_location(ip_addr)
+                # calculate the closest host
+                best_host = find_closest_host(lon, lat)
+                USER_IP_CACHE[ip_addr] = best_host
+
+            # build a DNS response packet
+            res = dnslib.DNSRecord.parse(data)
+            # set packet as a response
+            res.header.set_qr(dnslib.QR.RESPONSE)
+            # add query answer
+            res.add_answer(dnslib.RR(SERVER_NAME, rtype=dnslib.QTYPE.A, rdata=dnslib.A(best_host)))
+
+            sock.sendto(res.pack(), addr)
+    except KeyboardInterrupt:
+        sock.close()
+        sys.exit()
+
+
+if __name__ == '__main__':
+    main()

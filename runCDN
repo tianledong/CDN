@@ -1,0 +1,30 @@
+#!/bin/bash
+
+ec2_servers="ec2-54-159-99-25.compute-1.amazonaws.com
+ec2-50-18-189-64.us-west-1.compute.amazonaws.com
+ec2-18-229-54-5.sa-east-1.compute.amazonaws.com
+ec2-13-244-183-11.af-south-1.compute.amazonaws.com
+ec2-13-36-115-83.eu-west-3.compute.amazonaws.com
+ec2-13-51-89-160.eu-north-1.compute.amazonaws.com
+ec2-65-1-183-44.ap-south-1.compute.amazonaws.com
+ec2-13-208-85-51.ap-northeast-3.compute.amazonaws.com
+ec2-54-79-190-216.ap-southeast-2.compute.amazonaws.com"
+
+port=$2
+origin=$4
+dns_target=$6
+username=$8
+keyfile=${10}
+dns_server="cs5700cdnproject.ccs.neu.edu"
+
+# shellcheck disable=SC2086
+# dns ip: 129.10.117.187
+# cited from: https://stackoverflow.com/questions/29142/getting-ssh-to-execute-a-command-in-the-background-on-target-machine
+ssh -i "$keyfile" $username@$dns_server "DISPLAY=:0 ./dnsserver -p $port -n $dns_target< /dev/null > std.out 2> std.err &"
+# shellcheck disable=SC2154
+for server in $ec2_servers
+do
+  # shellcheck disable=SC2086
+  echo $server
+  ssh -i "$keyfile" $username@$server "DISPLAY=:0 ./httpserver -p $port -o $origin< /dev/null > std.out 2> std.err &"
+done
